@@ -1,0 +1,61 @@
+name: CI Workflow for MLProject
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  train-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.7'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas==2.2.3 scikit-learn==1.6.1 mlflow==2.19.0 virtualenv
+
+      - name: Run MLflow Project
+        id: mlflow_run
+        run: |
+          cd MLProject
+          export MLFLOW_TRACKING_URI=file:./mlruns
+          mlflow run . --env-manager=local
+          
+      - name: Get latest MLflow run_id
+        id: get_run_id
+        run: |
+          cd MLProject
+          export MLFLOW_TRACKING_URI=file:./mlruns
+          experiment_id=0
+          run_id=$(ls -1t "./mlruns/$experiment_id" | grep -E '^[a-f0-9]{32}$' | head -n 1)
+          echo "MLFLOW_RUN_ID=$run_id" >> $GITHUB_ENV
+          
+      - name: Upload Model Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-model
+          path: MLProject/mlruns/0/${{ env.MLFLOW_RUN_ID }}/artifacts/model
+          
+      - name: Build Docker model
+        run: |
+          cd MLProject
+          export MLFLOW_TRACKING_URI=file:./mlruns
+          mlflow models build-docker -m "runs:/${{ env.MLFLOW_RUN_ID }}/model" -n titanic-model --env-manager local
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          
+      - name: Tag and Push Docker Image
+        run: |
+          docker tag titanic-model ${{ secrets.DOCKER_USERNAME }}/titanic-model:latest
+          docker push ${{ secrets.DOCKER_USERNAME }}/titanic-model:latest
